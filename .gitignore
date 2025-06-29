@@ -1,0 +1,5 @@
+.env
+voro.db
+notes.txt
+requirements.txt
+__pycache__/
