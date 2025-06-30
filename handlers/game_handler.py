@@ -4,6 +4,7 @@ from services.game_service import GameService
 from services.user_service import UserService
 from datetime import datetime, timedelta
 import re
+import html
 
 class GameHandler:
     def __init__(self):
@@ -11,7 +12,16 @@ class GameHandler:
         self.user_service = UserService()
     
     async def find_games(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show available games"""
+
+        user_id = update.effective_user.id
+        user = self.user_service.get_user(user_id)
+
+        if not user:
+            await update.message.reply_text(
+                "⚠️ You need to create an account first! Use /start to get started."
+            )
+            return
+
         games = self.game_service.get_available_games()
         
         if not games:
@@ -21,143 +31,221 @@ class GameHandler:
             )
             return
         
-        text = "🎾 **Available Tennis Games:**\n\n"
-        keyboard = []
+        text = "🎾 <b>Available Tennis Games:</b>\n\n"
         
         for game in games:
-            game_time = game.datetime.strftime("%d/%m %I:%M %p")
-            spots_left = game.max_players - game.current_players
-            
-            text += f'Hosted by {game.creator_name}\n'
-            text += f"📍 **{game.location}**\n"
+            game_time = self.format_start_end_time(game.start_time, game.end_time)
+
+            # Get creator's display name
+            creator = self.user_service.get_user(game.creator_id)
+            creator_name = html.escape(creator.display_name if creator else "Unknown Creator")
+            join_link = f'https://t.me/voro_tennis_bot?start=joinwaitlist_{game.game_id}'
+
+            game_name = html.escape(game.game_name)
+            location = html.escape(game.location)
+            game_description = html.escape(game.game_description)
+
+            text += f"{game_name}\n"
+            # link to the creator's profile
+            text += f"👤 Hosted by: <a href='tg://user?id={game.creator_id}'>{creator_name}</a>\n"
             text += f"📅 {game_time}\n" 
-            text += f"⭐ Skill: {game.skill_range}\n"
+            text += f"📍 {location}\n"
+            text += f"💰 Court Cost: ${game.court_cost}\n"
+            text += f"⭐ Skill: {game.min_skill} to {game.max_skill}\n"
             text += f"👥 {game.current_players}/{game.max_players} players\n"
+            text += f"📋 Description: {game_description}\n"
+            # List all players and link to their profiles
+            if game.player_ids:
+                players = []
+                for player_id in game.player_ids:
+                    player = self.user_service.get_user(player_id)
+                    if player:
+                        players.append(f"<a href='tg://user?id={player_id}'>{html.escape(player.display_name)}</a>")
+                text += "👥 Players: " + ", ".join(players) + "\n"
+            text += f"<a href=\"{join_link}\">[Join Game 🔗]</a>\n\n"
             
-            keyboard.append([InlineKeyboardButton(
-                f"Join Waitlist - {game.location[:20]}", 
-                callback_data=f"join_{game.id}"
-            )])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, parse_mode='HTML', disable_web_page_preview=True)
     
+    # modified: create_game method to handle new game creation
     async def create_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Create a new game"""
+        # Check if user is registered
+        user_id = update.effective_user.id
+        user = self.user_service.get_user(user_id)
+
+        if not user:
+            await update.message.reply_text(
+                "⚠️ You need to create an account first! Use /start to get started."
+            )
+            return
+
         if not context.args:
             await update.message.reply_text(
                 "Let's create a tennis game! 🎾\n\n"
-                "**Format:**\n"
-                "`/create Marina Bay Courts, Tomorrow 7PM, 3.0-4.0, 4`\n\n"
-                "**Parameters:**\n"
-                "1. Location\n"
-                "2. Date/Time (Tomorrow 7PM, Friday 6PM, etc.)\n"
-                "3. Skill Range\n"
-                "4. Max Players (2-4)\n\n"
-                "**Example:**\n"
-                "`/create Jurong East Courts, Today 8PM, 3.5-4.0, 4`",
-                parse_mode='Markdown'
+                "Please provide the details in this <b>EXACT</b> format:\n\n"
+                "<i>COPY and PASTE example below:</i>\n\n",
+                parse_mode='HTML'
+            )
+            await update.message.reply_text(
+                "/create\n"
+                "Name: chillax doubles rally\n"
+                "Location: Pasir Ris Sports Center\n"
+                "Start Time: 30/06/2025, 1900\n"
+                "End Time: 30/06/2025, 2000\n"
+                "Min Skill: 3.0\n"
+                "Max Skill: 4.0\n"
+                "Max Players: 4\n"
+                "Court Cost: 10\n"
+                "Description: rally, then match. will provide balls but please bring balls too.\n\n",
             )
             return
         
         try:
-            # Parse the input
-            full_text = " ".join(context.args)
-            parts = [part.strip() for part in full_text.split(",")]
-            
-            if len(parts) != 4:
-                raise ValueError("Invalid format")
-            
-            location = parts[0]
-            time_str = parts[1]
-            skill_range = parts[2]
-            max_players = int(parts[3])
-            
-            if max_players < 2 or max_players > 4:
-                raise ValueError("Max players must be between 2 and 4")
-            
-            # Parse time (simplified - you might want to use a proper date parser)
-            game_datetime = self.parse_time_string(time_str)
-            
-            if game_datetime <= datetime.now():
-                raise ValueError("Game time must be in the future")
-            
-            # Create the game
-            user_id = update.effective_user.id
-            game_id = self.game_service.create_game(
+            data = self.parse_structured_input(update.message.text.replace("/create", "").strip())
+
+            self.game_service.create_game(
+                game_name=data["name"],
                 creator_id=user_id,
-                location=location,
-                game_datetime=game_datetime,
-                skill_range=skill_range,
-                max_players=max_players
+                location=data["location"],
+                start_time=data["start_time"],
+                end_time=data["end_time"],
+                court_cost=data["court_cost"],
+                min_skill=data["min_skill"],
+                max_skill=data["max_skill"],
+                max_players=data["max_players"],
+                game_description=data["description"]        
             )
             
-            formatted_time = game_datetime.strftime("%d/%m/%Y at %I:%M %p")
+            # Calculate duration
+            formatted_time = self.format_start_end_time(data["start_time"], data["end_time"])
             
             await update.message.reply_text(
-                f"✅ **Game Created Successfully!**\n\n"
-                f"🎾 **Game #{game_id}**\n"
-                f"📍 {location}\n"
+                f"✅ <b>Game Created Successfully!</b>\n\n"
+                f"<b>{html.escape(data['name'])}</b>\n"
+                f"📍 {html.escape(data['location'])}\n"
                 f"📅 {formatted_time}\n"
-                f"⭐ Skill Level: {skill_range}\n"
-                f"👥 Players: 1/{max_players} (You're in!)\n\n"
-                f"Your game is now visible to other players. "
+                f"⭐ Skill Level: {data['min_skill']} to {data['max_skill']}\n"
+                f"💰 Court Cost: ${data['court_cost']}\n"
+                f"👥 Players: 1/{data['max_players']} (You're in!)\n"
+                f"📋 Description: {html.escape(data['description'])}\n\n"
+                f"Your game is now visible to other players.\n\n"
                 f"I'll notify you when someone joins the waitlist!",
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             
-        except ValueError as e:
-            await update.message.reply_text(
-                f"❌ Error creating game: {str(e)}\n\n"
-                f"Please use the correct format:\n"
-                f"`/create Location, Time, Skill Range, Max Players`",
-                parse_mode='Markdown'
-            )
         except Exception as e:
             await update.message.reply_text(
                 f"❌ Something went wrong. Please try again.\n"
                 f"Error: {str(e)}"
             )
     
-    def parse_time_string(self, time_str: str) -> datetime:
-        """Parse time strings like 'Tomorrow 7PM', 'Today 8PM', 'Friday 6PM'"""
-        time_str = time_str.lower().strip()
-        now = datetime.now()
-        
-        # Extract time part (e.g., "7pm", "8:30pm")
-        time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', time_str)
-        if not time_match:
-            raise ValueError("Invalid time format. Use format like '7PM' or '8:30AM'")
-        
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2)) if time_match.group(2) else 0
-        period = time_match.group(3)
-        
-        if period == 'pm' and hour != 12:
-            hour += 12
-        elif period == 'am' and hour == 12:
-            hour = 0
-        
-        # Determine date
-        if 'today' in time_str:
-            target_date = now.date()
-        elif 'tomorrow' in time_str:
-            target_date = (now + timedelta(days=1)).date()
+    def format_start_end_time(self, start_time: int, end_time: int) -> str:
+        # Calculate the duration, if less 1 hour, show minutes, else show hours
+        duration = end_time - start_time
+        if duration < 3600:  # Less than 1 hour
+            duration_str = f"{duration // 60} min"
+        # if duration is exactly hours whole number, show as hours, else show as hours and minutes
+        elif duration % 3600 == 0:
+            duration_str = f"{duration // 3600} hr"
         else:
-            # For now, assume it's today if no date specified
-            target_date = now.date()
-        
-        target_datetime = datetime.combine(target_date, datetime.min.time().replace(hour=hour, minute=minute))
-        
-        # If the time has already passed today, assume it's for tomorrow
-        if target_datetime <= now and target_date == now.date():
-            target_datetime += timedelta(days=1)
-        
-        return target_datetime
-    
+            hours = duration // 3600
+            minutes = (duration % 3600) // 60
+            duration_str = f"{hours} hr {minutes} min"
+
+        """Format start and end time for display"""
+        start_dt = datetime.fromtimestamp(start_time)
+        end_dt = datetime.fromtimestamp(end_time)
+        return f"{start_dt.strftime('%a, %d %b %Y, %I:%M %p')} - {end_dt.strftime('%I:%M %p')} | Duration: {duration_str}"
+
+    def parse_structured_input(self, text: str) -> dict:
+        # Split and clean
+        lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+        fields = {}
+
+        expected_keys = [
+            "Name", "Location", "Start Time", "End Time", "Min Skill",
+            "Max Skill", "Max Players", "Court Cost", "Description"
+        ]
+        if len(lines) != len(expected_keys):
+            raise ValueError("Please fill in all fields using the template. One or more fields are missing.")
+
+        # Line-by-line parsing
+        for i, key in enumerate(expected_keys):
+            if ":" not in lines[i]:
+                raise ValueError(f"Field '{key}' is missing or malformed.")
+            k, v = lines[i].split(":", 1)
+            if k.strip() != key:
+                raise ValueError(f"Expected field '{key}' but got '{k.strip()}'. Please follow the exact template.")
+            fields[key] = v.strip()
+
+        # Validation
+        if not fields["Name"]:
+            raise ValueError("Name cannot be empty.")
+        if not fields["Location"]:
+            raise ValueError("Location cannot be empty.")
+
+        # Start and End Time
+        try:
+            start_datetime = datetime.strptime(fields["Start Time"], "%d/%m/%Y, %H%M")
+        except:
+            raise ValueError("Invalid Start Time format. Please use: `DD/MM/YYYY, HHMM`.")
+
+        try:
+            end_datetime = datetime.strptime(fields["End Time"], "%d/%m/%Y, %H%M")
+        except:
+            raise ValueError("Invalid End Time format. Please use: `DD/MM/YYYY, HHMM`.")
+
+        if start_datetime <= datetime.now():
+            raise ValueError("Start Time must be in the future.")
+        if end_datetime <= start_datetime:
+            raise ValueError("End Time must be after Start Time.")
+
+        # Skill validation
+        try:
+            min_skill = float(fields["Min Skill"])
+            max_skill = float(fields["Max Skill"])
+            if not (0.0 <= min_skill <= 7.0):
+                raise ValueError("Min Skill must be between 0.0 and 7.0.")
+            if not (0.0 <= max_skill <= 7.0):
+                raise ValueError("Max Skill must be between 0.0 and 7.0.")
+            if min_skill > max_skill:
+                raise ValueError("Min Skill cannot be greater than Max Skill.")
+        except:
+            raise ValueError("Min and Max Skill must be valid numbers between 0.0 and 7.0.")
+
+        # Max Players
+        try:
+            max_players = int(fields["Max Players"])
+            if not (2 <= max_players <= 4):
+                raise ValueError("Max Players must be between 2 and 4.")
+        except:
+            raise ValueError("Max Players must be a number.")
+
+        # Court Cost
+        try:
+            court_cost = float(fields["Court Cost"])
+            if court_cost < 0:
+                raise ValueError("Court Cost must be 0 or more.")
+        except:
+            raise ValueError("Court Cost must be a number.")
+
+        if not fields["Description"]:
+            raise ValueError("Description cannot be empty.")
+
+        return {
+            "name": fields["Name"],
+            "location": fields["Location"],
+            # Conver start and end times to datetime objects
+            "start_time": int(start_datetime.timestamp()),
+            "end_time": int(end_datetime.timestamp()),
+            "min_skill": min_skill,
+            "max_skill": max_skill,
+            "max_players": max_players,
+            "court_cost": court_cost,
+            "description": fields["Description"]
+        }
+
     async def my_games(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show user's games"""
-        user_id = update.effective_user.id
+        user_id = str(update.effective_user.id)
         games = self.game_service.get_user_games(user_id)
         
         if not games:
@@ -167,31 +255,120 @@ class GameHandler:
             )
             return
         
-        text = "🎾 **Your Upcoming Games:**\n\n"
-        keyboard = []
+        text = "🎾 <b>Your Upcoming Games:</b>\n\n"
         
         for game in games:
-            game_time = game.datetime.strftime("%d/%m %I:%M %p")
-            creator_text = "👑 Your game" if game.creator_id == user_id else "🎾 Joined"
+            game_time = self.format_start_end_time(game.start_time, game.end_time)
+            # Get creator's display name
+            creator = self.user_service.get_user(game.creator_id)
+            creator_name = creator.display_name if creator else "Unknown Creator"
+            
+            creator_text = "👑 Your game" if game.creator_id == user_id else f"🎾 Joined <a href='tg://user?id={game.creator_id}'>{creator_name}</a>'s game"
             
             text += f"{creator_text}\n"
-            text += f"📍 {game.location}\n"
-            text += f"📅 {game_time}\n"
+            text += f"{html.escape(game.game_name)}\n"
+            # link to the creator's profile
+            text += f"📅 {game_time}\n" 
+            text += f"📍 {html.escape(game.location)}\n"
+            text += f"💰 Court Cost: ${game.court_cost}\n"
+            text += f"⭐ Skill: {game.min_skill} to {game.max_skill}\n"
             text += f"👥 {game.current_players}/{game.max_players} players\n"
-            text += f"📊 Status: {game.status.title()}\n\n"
-            
-            # Add manage button for creators, leave button for others
-            if game.creator_id == user_id:
-                keyboard.append([InlineKeyboardButton(
-                    f"Manage Game #{game.id}", 
-                    callback_data=f"manage_{game.id}"
-                )])
-            else:
-                keyboard.append([InlineKeyboardButton(
-                    f"Leave Game #{game.id}", 
-                    callback_data=f"leave_{game.id}"
-                )])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            text += f"📋 Description: {html.escape(game.game_description)}\n"
+            # List all players and link to their profiles
+            if game.player_ids:
+                players = []
+                for player_id in game.player_ids:
+                    player = self.user_service.get_user(player_id)
+                    if player:
+                        players.append(f"<a href='tg://user?id={player_id}'>{html.escape(player.display_name)}</a>")
+                text += "👥 Players: " + ", ".join(players) + "\n"
+            text += f"📊 Status: {game.status.title()}\n"
 
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            # If the user is the creator, provide a delete option
+            if game.creator_id == user_id:
+                text += f"⏳ <b>View Waitlist</b> [/waitlist_{game.game_id}]\n"
+                text += f"❌ <b>Cancel</b> [/cancel_{game.game_id}]\n\n"
+                
+            else:
+                text += f"[🚪 <b>Leave</b> /leave_{game.game_id}]\n\n"
+
+        await update.message.reply_text(text, parse_mode='HTML')
+
+    async def cancel_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = str(update.effective_user.id)
+        game_id = re.search(r'cancel_(\w+)', update.message.text).group(1)
+
+        game = self.game_service.get_game(game_id)
+
+        if not game:
+            await update.message.reply_text("❌ Game not found or has already been cancelled.")
+            return
+
+        if game.creator_id != user_id:
+            await update.message.reply_text("❌ You can only cancel games you created.")
+            return
+
+        success = self.game_service.cancel_game(game_id)
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ <b>Game Cancelled Successfully!</b>\n\n"
+                f"{html.escape(game.game_name)} has been cancelled. All players have been notified.",
+                parse_mode='HTML'
+            )
+            
+            # Notify all players in the game
+            for player_id in game.player_ids:
+                
+                # skip the creator since they are already notified
+                if player_id == user_id:
+                    continue
+
+                player = self.user_service.get_user(player_id)
+                if player:
+                    await context.bot.send_message(
+                        chat_id=player.telegram_id,
+                        text=f"📢 <b>Game Cancelled</b>\n\n"
+                             f"The game <b>{html.escape(game.game_name)}</b> you joined has been cancelled by the host.\n"
+                             f"Please check /find for other available games.",
+                        parse_mode='HTML'
+                    )
+        else:
+            await update.message.reply_text("❌ Could not cancel the game. Please try again.")
+
+
+    async def leave_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = str(update.effective_user.id)
+        game_id = re.search(r'leave_(\w+)', update.message.text).group(1)
+
+        success = self.game_service.leave_game(game_id, user_id)
+        
+        if success:
+            await update.message.reply_text(
+                f"<b>Left the game successfully</b>\n\n"
+                f"Only join games you can attend! 🎾",
+                parse_mode='HTML'
+            )
+            game = self.game_service.get_game(game_id)
+            user = self.user_service.get_user(user_id)
+
+            # formatted start and end time
+            game_time = self.format_start_end_time(game.start_time, game.end_time)
+            
+            # Notify game creator
+            await context.bot.send_message(
+                # get the game object
+                
+                chat_id=game.creator_id,
+                text=f"📢 <b>Player Left Your Game</b>\n\n"
+                     f"👤 <a href='tg://user?id={user.telegram_id}'>{html.escape(user.display_name)}</a> has left the game:\n"
+                     f"🎾 {html.escape(game.game_name)}\n"
+                     f"📍 {html.escape(game.location)}\n"
+                     f"📅 {game_time}\n\n"
+                     f"Current players: {game.current_players}/{game.max_players}\n"
+                     f"Your game is now open for new players!"
+            )
+        else:
+            await update.message.reply_text("❌ Could not leave the game. Please try again.")
+
+    

@@ -1,5 +1,5 @@
 import logging
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from handlers.user_handler import UserHandler
 from handlers.game_handler import GameHandler
 from handlers.waitlist_handler import WaitlistHandler
@@ -46,23 +46,39 @@ class Voro:
         self.app.add_handler(CommandHandler("find", self.game_handler.find_games))
         self.app.add_handler(CommandHandler("create", self.game_handler.create_game))
         self.app.add_handler(CommandHandler("mygames", self.game_handler.my_games))
+
+         # Pattern-based handlers for dynamic commands (these need MessageHandler with regex)
+        # Game-related pattern handlers
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/cancel_\w+$'), 
+            self.game_handler.cancel_game
+        ))
         
-        # Callback query handlers
-        self.app.add_handler(CallbackQueryHandler(
-            self.waitlist_handler.handle_join_waitlist, 
-            pattern=r"^join_\d+$"
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/leave_\w+$'), 
+            self.game_handler.leave_game
         ))
-        self.app.add_handler(CallbackQueryHandler(
-            self.waitlist_handler.handle_approve_reject, 
-            pattern=r"^(approve|reject)_\d+_\d+$"
+        
+        # Waitlist-related pattern handlers
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/waitlist_\w+$'), 
+            self.waitlist_handler.get_waitlist_for_game
         ))
-        self.app.add_handler(CallbackQueryHandler(
-            self.waitlist_handler.show_waitlist, 
-            pattern=r"^waitlist_\d+$"
+        
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/approve_\w+_\w+$'), 
+            self.waitlist_handler.approve_waitlist_player
         ))
-        self.app.add_handler(CallbackQueryHandler(
-            self.waitlist_handler.handle_leave_game, 
-            pattern=r"^leave_\d+$"
+        
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/reject_\w+_\w+$'), 
+            self.waitlist_handler.reject_waitlist_player
+        ))
+
+        # Profile viewing pattern handler
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/profile_\w+$'), 
+            self.user_handler.view_user_profile  # You'll need this method
         ))
         
         # Job queue for reminders (runs daily at 10 AM)
