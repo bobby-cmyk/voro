@@ -1,16 +1,22 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime as dt
 from typing import Optional
 
 @dataclass
 class Game:
-    id: Optional[int]
-    creator_id: int
+    game_id: str
+    game_name: str
+    creator_id: str
     location: str
-    datetime: dt
-    skill_range: str
+    start_time: int
+    end_time: int
+    court_cost: float
+    min_skill: float
+    max_skill: float
     max_players: int
     current_players: int
     status: str  # 'open', 'full', 'completed'
-    telegram_group_id: Optional[int] = None
-    created_at: Optional[dt] = None
+    telegram_group_id: str
+    created_at: int
+    game_description: str
+    player_ids: list[str] = field(default_factory=list)

@@ -1,13 +1,24 @@
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from services.user_service import UserService
 from datetime import datetime as dt
+from handlers.waitlist_handler import WaitlistHandler
 
 class UserHandler:
     def __init__(self):
         self.user_service = UserService()
+        self.waitlist_handler = WaitlistHandler()
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+        args = context.args
+
+        if args and args[0].startswith("joinwaitlist_"):
+            game_id = args[0].replace("joinwaitlist_", "")
+            await self.waitlist_handler.handle_join_waitlist(update, context, game_id)
+            return
+
         user = update.effective_user
 
         # Check if user already exists in database
@@ -165,5 +176,28 @@ class UserHandler:
                 f"To delete your profile, please confirm with '<b>/deleteprofile yes</b>'\n",
                 parse_mode='HTML'
             )
-    
-    
+
+    # added: view_user_profile method to view another user's profile
+    async def view_user_profile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # /profile_<user_id>
+        #  match = re.search(r'profile_(\w+)_(\w+)', update.message.text)
+        match = re.search(r'profile_(\w+)', update.message.text)
+        if not match:
+            await update.message.reply_text("❌ Invalid command format.")
+            return
+        user_id = match.group(1)
+        user_data = self.user_service.get_user(user_id)
+        if not user_data:
+            await update.message.reply_text("⚠️ User not found.")
+            return
+        await update.message.reply_text(
+            f"<b>User Profile</b>\n"
+            f"👤 Display Name: {user_data.display_name}\n"
+            f"⭐ Skill Level: {user_data.skill_level}\n"
+            f"📋 Bio: {user_data.bio or 'No bio set'}\n"
+            f"🎾 Games Completed: {user_data.games_completed}\n"
+            f"📅 Joined Since: {dt.fromtimestamp(user_data.created_at).strftime('%d %b %Y')}\n",
+            parse_mode='HTML'
+        )
+        
+
